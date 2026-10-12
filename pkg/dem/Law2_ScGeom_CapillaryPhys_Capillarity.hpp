@@ -4,6 +4,13 @@
 *  Copyright (C) 2006 by luc Scholtes                                    *
 *  luc.scholtes@hmg.inpg.fr                                              *
 *                                                                        *
+*  Copyright (C) 2026 by Chang GUO                                       *
+*  chang.guo@connect.polyu.hk                                            *
+*  Modifications by Chang GUO (2026):                                    *
+*  - added virtual destructors to BodiesMenisciiList, capillarylaw       *
+*    and to the law class itself;                                        *
+*  - made checkFusion() virtual, so this law can be derived from.        *
+*                                                                        *
 *  This program is free software; it is licensed under the terms of the  *
 *  GNU General Public License v2 or later. See file LICENSE for details. *
 *************************************************************************/
@@ -64,6 +71,7 @@ private:
 	//shared_ptr<Interaction> empty;
 
 public:
+	virtual ~BodiesMenisciiList() { };
 	BodiesMenisciiList();
 	BodiesMenisciiList(Scene*, bool); //TODO: remove?
 	bool                                prepare(Scene*, bool);
@@ -80,7 +88,8 @@ public:
 /// This is the constitutive law
 class Law2_ScGeom_CapillaryPhys_Capillarity : public GlobalEngine {
 public:
-	void                     checkFusion();
+	virtual ~Law2_ScGeom_CapillaryPhys_Capillarity() { };
+	virtual void                     checkFusion();
 	shared_ptr<capillarylaw> capillary;
 	BodiesMenisciiList       bodiesMenisciiList;
 
@@ -97,7 +106,7 @@ public:
 	((bool,fusionDetection,false,,"If true potential menisci overlaps are checked, computing :yref:`fusionNumber<CapillaryPhys.fusionNumber>` for each capillary interaction, and reducing :yref:`fCap<CapillaryPhys.fCap>` according to :yref:`binaryFusion<Law2_ScGeom_CapillaryPhys_Capillarity.binaryFusion>`"))
 	((bool,binaryFusion,true,,"If true, capillary forces are set to zero as soon as, at least, 1 overlap (menisci fusion) is detected. Otherwise :yref:`fCap<CapillaryPhys.fCap>` = :yref:`fCap<CapillaryPhys.fCap>` / (:yref:`fusionNumber<CapillaryPhys.fusionNumber>` + 1 ) (experimental)"))
 	((bool,createDistantMeniscii,false,,"Generate meniscii between distant spheres ? Else only maintain the existing ones. For modeling a wetting path this flag should always be false. For a drying path it should be true for one step (initialization) then false, as in the logic of [Scholtes2009c]_"))
-        ((Real,surfaceTension,0.073,,"Value of considered surface tension")) // (0.073 N/m is air-water surface tension at 20 Celsius degrees)
+    ((Real,surfaceTension,0.073,,"Value of considered surface tension")) // (0.073 N/m is air-water surface tension at 20 Celsius degrees)
 	((string,suffCapFiles,"",,"Capillary files suffix: M(r=X)suffCapFiles"))
 	,,/*constructor*/
 	hertzInitialized = false;
@@ -140,6 +149,7 @@ class capillarylaw // class for a whole set of capillary files M(r=..)
 {
 public:
 	capillarylaw();
+	virtual ~capillarylaw() { };
 	std::vector<Tableau>
 	        data_complete; // data_complete includes, in ascending order of r, all capillary files: each Tableau of data_complete is one capillary file
 	MeniscusParameters interpolate(Real R1, Real R2, Real D, Real P, int* index);

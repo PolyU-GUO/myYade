@@ -1,4 +1,8 @@
 // 2009 © Václav Šmilauer <eudoxos@arcig.cz>
+// Modifications by Chang GUO (2026): Recorder::out is now public (it used to be
+// protected) so that pkg/dem/DirectShearBoxRecorder can write to the same output
+// stream. Licensed under the GNU General Public License v2 or later, like the rest
+// of YADE; see file LICENSE for details.
 #pragma once
 #include <pkg/common/PeriodicEngines.hpp>
 
@@ -17,7 +21,7 @@ class Recorder : public PeriodicEngine {
 		if (!out.good()) throw ios_base::failure(__FILE__ ": I/O error opening file `" + fileTemp + "'.");
 	}
 
-protected:
+public:
 	//! stream object that derived engines should write to
 	std::ofstream out;
 

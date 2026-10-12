@@ -1,4 +1,8 @@
 // 2007 © Václav Šmilauer <eudoxos@arcig.cz>
+// Modifications by Chang GUO (2026): defined Shop::getCapillaryStressNew(),
+// Shop::capillaryCalculation(), Shop::setFrictionEtaRoll(),
+// Shop::growParticlesWithInteractions() and Shop::growParticlesWith6DInteractions().
+// Licensed under the GNU General Public License v2 or later; see file LICENSE.
 #include "Shop.hpp"
 #include <lib/base/LoggingUtils.hpp>
 #include <lib/high-precision/Constants.hpp>
@@ -802,6 +806,166 @@ Matrix3r Shop::getCapillaryStress(Real volume, bool mindlin)
 	return stressTensor / volume;
 }
 
+Matrix3r Shop::getCapillaryStressNew(Real volume)
+{
+	/* 
+		Love-Weber capillary stress tensor of the 6D capillary model, sigma_ij = (1/V) * sum(l_i fCap_j), with l the
+		branch vector joining the two body centers and fCap the capillary force of the liquid bridge. fCap is read from
+		CapillaryCohPhys, so no Mindlin switch is needed unlike in getCapillaryStress. Only sphere-sphere bridges are
+		summed: interactions involving walls, facets or clumps are skipped, so sphere-wall bridges are not included.
+		If volume is not passed, the cell volume is used in periodic cases and the AABB volume of the packing otherwise.
+	*/
+	Scene* scene = Omega::instance().getScene().get();
+	Real   volumeNonPeri = 0;
+	if (volume == 0 && !scene->isPeriodic) {
+		const auto extrema = Shop::aabbExtrema();
+		LOG_ONCE_WARN("getCapillaryStress used with default volume tend to underestimate the stress due to overlaps on the boundaries, passing actual volume "
+		              "could be more safe.")
+		volumeNonPeri = (extrema.second[0] - extrema.first[0]) * (extrema.second[1] - extrema.first[1]) * (extrema.second[2] - extrema.first[2]);
+	}
+	if (volume == 0) volume = scene->isPeriodic ? scene->cell->hSize.determinant() : volumeNonPeri;
+	Matrix3r   stressTensor = Matrix3r::Zero();
+	const bool isPeriodic   = scene->isPeriodic;
+	FOREACH(const shared_ptr<Interaction>& I, *scene->interactions)
+	{
+		if (!I->isReal()) continue;
+		int  Sph_Index    = Sphere::getClassIndexStatic(); // get sphere index for checking if bodies are spheres
+		shared_ptr<Body> b1     = Body::byId(I->getId1(), scene);
+		shared_ptr<Body> b2     = Body::byId(I->getId2(), scene);
+		shared_ptr<Shape>& shape1 = b1->shape;
+		shared_ptr<Shape>& shape2 = b2->shape;
+		// only sphere-sphere interactions contribute to this tensor
+		if ((shape1->getClassIndex() != Sph_Index) or (shape2->getClassIndex() != Sph_Index)) continue;
+		Vector3r         fCap   = YADE_CAST<CapillaryCohPhys*>(I->phys.get())->fCap;
+		Vector3r         branch = b1->state->pos - b2->state->pos;
+		if (isPeriodic) branch -= scene->cell->hSize * I->cellDist.cast<Real>();
+		stressTensor += fCap * branch.transpose();
+	}
+	return stressTensor / volume;
+}
+
+py::tuple Shop::capillaryCalculation(Real volume)
+{	
+	/* 
+		Aggregate the capillary state of the sample in one pass, for the 6D capillary model. Only interactions whose
+		IPhys is CapillaryCohPhys and whose meniscus flag is true, i.e. contacts carrying a liquid bridge, contribute.
+		Returns the 8-tuple (SIG_11_cap, SIG_22_cap, SIG_33_cap, SIG_12_cap, SIG_13_cap, SIG_23_cap, capillaryPressure,
+		Sr), where the six stress components are homogenised by the sample volume, capillaryPressure is the one of the
+		last wet contact and Sr is the water saturation in percent (100 when saturated). If volume is not passed, the
+		cell volume is used in periodic cases and the AABB volume of the packing otherwise.
+	*/
+	Scene* scene = Omega::instance().getScene().get();
+	shared_ptr<BodyContainer>& bodies = scene->bodies;
+	Real   volumeNonPeri = 0;
+	if (volume == 0 && !scene->isPeriodic) {
+		const auto extrema = Shop::aabbExtrema();
+		LOG_ONCE_WARN("capillaryCalculation used with default volume tend to underestimate the stress due to overlaps on the boundaries, passing actual volume "
+		              "could be more safe.")
+		volumeNonPeri = (extrema.second[0] - extrema.first[0]) * (extrema.second[1] - extrema.first[1]) * (extrema.second[2] - extrema.first[2]);
+	}
+	if (volume == 0) volume = scene->isPeriodic ? scene->cell->hSize.determinant() : volumeNonPeri;
+	// Running accumulators: components of the capillary force of the current contact
+	// and of the two body centres, the raw (not yet divided by V) stress sums, the
+	// total liquid volume and the capillary pressure of the last wet contact.
+	Real f1_cap_x = 0, f1_cap_y = 0, f1_cap_z = 0, x1 = 0, y1 = 0, z1 = 0, x2 = 0, y2 = 0, z2 = 0;
+	Real sig11_cap = 0, sig22_cap = 0, sig33_cap = 0, sig12_cap = 0, sig13_cap = 0, sig23_cap = 0, Vwater = 0, capillaryPressure = 0;
+	int  j = 0; // number of wet contacts contributing to the sums
+
+	// First pass over all interactions: accumulate the capillary stress and the liquid volume.
+	InteractionContainer::iterator ii    = scene->interactions->begin();
+	InteractionContainer::iterator iiEnd = scene->interactions->end();
+	for (; ii != iiEnd; ++ii) {
+		if ((*ii)->isReal()) {
+			const shared_ptr<Interaction>& interaction = *ii;
+
+			// The 6D capillary+cohesive IPhys carries fCap / vMeniscus / capillaryPressure.
+			CapillaryCohPhys* meniscusParameters = static_cast<CapillaryCohPhys*>(interaction->phys.get());
+
+			// Only contacts with an actual liquid bridge contribute.
+			if (meniscusParameters->meniscus) {
+				j = j + 1;
+
+				unsigned int id1 = interaction->getId1();
+				unsigned int id2 = interaction->getId2();
+
+				Vector3r fcap = meniscusParameters->fCap;
+
+				f1_cap_x = fcap[0];
+				f1_cap_y = fcap[1];
+				f1_cap_z = fcap[2];
+
+				Body* de1 = (*bodies)[id1].get();
+				Body* de2 = (*bodies)[id2].get();
+
+				x1 = de1->state->pos[0];
+				y1 = de1->state->pos[1];
+				z1 = de1->state->pos[2];
+				x2 = de2->state->pos[0];
+				y2 = de2->state->pos[1];
+				z2 = de2->state->pos[2];
+
+				/// capillary stresses from contact forces
+
+				// Raw dyadic accumulation l_i * fCap_j (branch = pos1 - pos2), using the
+				// individual components extracted above. NOTE: no 1/V factor and no
+				// off-diagonal symmetrisation is applied at this stage - the values are
+				// scaled by V only in the "homogeneized" block further below.
+				sig11_cap = sig11_cap + f1_cap_x * (x1 - x2);
+				sig22_cap = sig22_cap + f1_cap_y * (y1 - y2);
+				sig33_cap = sig33_cap + f1_cap_z * (z1 - z2);
+				sig12_cap = sig12_cap + f1_cap_x * (y1 - y2);
+				sig13_cap = sig13_cap + f1_cap_x * (z1 - z2);
+				sig23_cap = sig23_cap + f1_cap_y * (z1 - z2);
+
+				/// Liquid volume
+
+				// Sum the meniscus volumes over wet contacts, and keep the last
+				// capillary pressure seen (assumed uniform in the sample).
+				Vwater += meniscusParameters->vMeniscus;
+				capillaryPressure = meniscusParameters->capillaryPressure;
+			}
+		}
+	}
+
+	/// Solid volume
+	// Second pass: total solid volume of all spheres, Vs = sum(4/3 pi R^3).
+	Real Vs = 0, Rbody = 0, SR = 0;
+
+	for (const auto& b : *bodies) {
+		if (b->shape->getClassIndex() != Sphere::getClassIndexStatic()) continue;
+		Sphere* sphere = static_cast<Sphere*>(b->shape.get());
+
+		if (sphere) {
+			Rbody = sphere->radius;
+			SR += Rbody;
+			Vs += 1.333 * Mathr::PI * (Rbody * Rbody * Rbody);
+		}
+	}
+
+	// Void volume Vv = V - Vs; water saturation Sr = Vwater / Vv (capped at 100%);
+	// gravimetric water content w = Vwater / V (capped at the porosity Vv/V).
+	Real Vv = volume - Vs;
+	Real Sr = 100 * Vwater / Vv;
+	if (Sr > 100) Sr = 100;
+	Real w = 100 * Vwater / volume;
+	if (w > (100 * Vv / volume)) w = 100 * (Vv / volume);
+
+	/// homogeneized capillary stresses
+
+	// Divide the raw accumulations by the sample volume to obtain the macroscopic
+	// (homogenised) capillary stress components.
+	Real SIG_11_cap = 0, SIG_22_cap = 0, SIG_33_cap = 0, SIG_12_cap = 0, SIG_13_cap = 0, SIG_23_cap = 0;
+
+	SIG_11_cap = sig11_cap / volume;
+	SIG_22_cap = sig22_cap / volume;
+	SIG_33_cap = sig33_cap / volume;
+	SIG_12_cap = sig12_cap / volume;
+	SIG_13_cap = sig13_cap / volume;
+	SIG_23_cap = sig23_cap / volume;
+	// Return (s11, s22, s33, s12, s13, s23, capillaryPressure, Sr[%]).
+	return py::make_tuple(SIG_11_cap, SIG_22_cap, SIG_33_cap, SIG_12_cap,SIG_13_cap,SIG_23_cap,capillaryPressure,Sr);
+}
+
 void Shop::getStressLWForEachBody(vector<Matrix3r>& bStresses)
 {
 	const shared_ptr<Scene>& scene = Omega::instance().getScene();
@@ -885,6 +1049,44 @@ void Shop::setContactFriction(Real angleRad)
 	}
 }
 
+void Shop::setFrictionEtaRoll(Real angleRad,Real er)
+{
+	/* 
+		Set the friction angle and the rolling resistance coefficient etaRoll of the materials, then refresh the
+		existing contacts. Only the material of dynamic non-clump bodies is modified. For every real interaction the
+		contact friction is recomputed from the two materials, and maxRollPl / maxTwistPl / momentRotationLaw are
+		updated so the new etaRoll takes effect immediately. Expects CohFrictMat materials and ScGeom6D geometries,
+		i.e. the 6D capillary-cohesive model.
+	*/
+	Scene*                     scene  = Omega::instance().getScene().get();
+	shared_ptr<BodyContainer>& bodies = scene->bodies;
+	for (const auto& b : *scene->bodies) {
+		if (b->isClump()) continue;
+		if (b->isDynamic()) 
+		{
+			YADE_PTR_CAST<CohFrictMat>(b->material)->frictionAngle = angleRad;
+			YADE_PTR_CAST<CohFrictMat>(b->material)->etaRoll = er;
+		}
+	}
+	FOREACH(const shared_ptr<Interaction>& ii, *scene->interactions)
+	{
+		if (!ii->isReal()) continue;
+		const shared_ptr<CohFrictMat>& sdec1 = YADE_PTR_CAST<CohFrictMat>((*bodies)[(Body::id_t)((ii)->getId1())]->material);
+		const shared_ptr<CohFrictMat>& sdec2 = YADE_PTR_CAST<CohFrictMat>((*bodies)[(Body::id_t)((ii)->getId2())]->material);
+		//FIXME - why dynamic_cast fails here?
+		ScGeom6D*    geom  = YADE_CAST<ScGeom6D*>(ii->geom.get());
+		CapillaryCohPhys*  contactPhysics      = YADE_CAST<CapillaryCohPhys*>((ii)->phys.get());
+		const Real& fa                         = sdec1->frictionAngle;
+		const Real& fb                         = sdec2->frictionAngle;
+		contactPhysics->tangensOfFrictionAngle = math::tan(math::min(fa, fb));
+		const Real& Da = geom->radius1;
+		const Real& Db = geom->radius2;
+		contactPhysics->maxRollPl = math::min(sdec1->etaRoll * Da, sdec2->etaRoll * Db);
+		contactPhysics->maxTwistPl = math::min(sdec1->etaTwist * Da, sdec2->etaTwist * Db);
+		contactPhysics->momentRotationLaw = (sdec1->momentRotationLaw && sdec2->momentRotationLaw);
+	}
+}
+
 void Shop::growParticles(Real multiplier, bool updateMass, bool dynamicOnly)
 {
 	Scene*    scene     = Omega::instance().getScene().get();
@@ -928,6 +1130,133 @@ void Shop::growParticles(Real multiplier, bool updateMass, bool dynamicOnly)
 			const shared_ptr<FrictPhys>& contactPhysics = YADE_PTR_CAST<FrictPhys>(ii->phys);
 			contactPhysics->kn *= multiplier;
 			contactPhysics->ks *= multiplier;
+		}
+	}
+}
+
+void Shop::growParticlesWithInteractions(Real multiplier, bool updateMass, bool dynamicOnly)
+{
+	/* 
+		Grow all non-clumpmember spheres by multiplier. always update radius in body's shape. and kn ks in contactPhysics. 
+		Update mass and inertia if updateMass. Only grow dynamic sphere if dynamicOnly.
+	*/
+	Scene*    scene     = Omega::instance().getScene().get();
+	for (const auto& b : *scene->bodies) {
+		if (dynamicOnly && !b->isDynamic()) continue;
+		if (b->isClump() or b->isClumpMember()) continue;
+		//We grow only spheres and clumps
+		if (b->shape->getClassName() == "Sphere") {
+			if (updateMass) {
+				b->state->mass *= pow(multiplier, 3);
+				b->state->inertia *= pow(multiplier, 5);
+			}
+			// for spheres, we update radius
+			(YADE_CAST<Sphere*>(b->shape.get()))->radius *= multiplier;
+		}
+	}
+	// update the interactions affected by the growth: refresh the reference radii of the bodies that
+	// were grown, and recompute the contact stiffnesses kn ks from the new radii
+	FOREACH(const shared_ptr<Interaction>& ii, *scene->interactions)
+	{
+		if (ii->isReal()) {
+			shared_ptr<Body>& b1 = (*(scene->bodies))[ii->getId1()];
+			shared_ptr<Body>& b2 = (*(scene->bodies))[ii->getId2()];
+			const shared_ptr<FrictMat>& sdec1 = YADE_PTR_CAST<FrictMat>(b1->material);
+			const shared_ptr<FrictMat>& sdec2 = YADE_PTR_CAST<FrictMat>(b2->material);
+			
+			FrictPhys* contactPhysics = YADE_CAST<FrictPhys*>(ii->phys.get());
+			ScGeom*     geom = YADE_CAST<ScGeom*>(ii->geom.get());
+			// reference radii of the two bodies, as grown
+			if ((!dynamicOnly || b1->isDynamic()) && b1->shape->getClassName() == "Sphere")
+				geom->refR1 = YADE_CAST<Sphere*>(b1->shape.get())->radius;
+			if ((!dynamicOnly || b2->isDynamic()) && b2->shape->getClassName() == "Sphere")
+				geom->refR2 = YADE_CAST<Sphere*>(b2->shape.get())->radius;
+			// harmonic averages of kn and ks for the new radii
+			Real          Ea             = sdec1->young;
+			Real          Eb             = sdec2->young;
+			Real          Va             = sdec1->poisson;
+			Real          Vb             = sdec2->poisson;
+			Real          Da             = geom->radius1;
+			Real          Db             = geom->radius2;
+			Real          Kn             = 2.0 * Ea * Da * Eb * Db / (Ea * Da + Eb * Db); 
+			Real Ks;
+			if (Va && Vb)
+				Ks = 2.0 * Ea * Da * Va * Eb * Db * Vb / (Ea * Da * Va + Eb * Db * Vb); 
+			else
+				Ks = 0;
+
+			contactPhysics->kn = Kn;
+			contactPhysics->ks = Ks;
+		}
+	}
+}
+
+
+void Shop::growParticlesWith6DInteractions(Real multiplier, bool updateMass, bool dynamicOnly)
+{
+	/* 
+		Grow all non-clumpmember spheres by multiplier. always update radius in body's shape. and kn ks kr ktw maxRollPl maxTwistPl in contactPhysics. 
+		Update mass and inertia if updateMass. Only grow dynamic sphere if dynamicOnly.
+	*/
+	Scene*    scene     = Omega::instance().getScene().get();
+	for (const auto& b : *scene->bodies) {
+		if (dynamicOnly && !b->isDynamic()) continue;
+		if (b->isClump() or b->isClumpMember()) continue;
+		//We grow only spheres and clumps
+		if (b->shape->getClassName() == "Sphere") {
+			if (updateMass) {
+				b->state->mass *= pow(multiplier, 3);
+				b->state->inertia *= pow(multiplier, 5);
+			}
+			// for spheres, we update radius
+			(YADE_CAST<Sphere*>(b->shape.get()))->radius *= multiplier;
+		}
+	}
+	FOREACH(const shared_ptr<Interaction>& ii, *scene->interactions)
+	{
+		if (ii->isReal()) {
+			shared_ptr<Body>& b1 = (*(scene->bodies))[ii->getId1()];
+			shared_ptr<Body>& b2 = (*(scene->bodies))[ii->getId2()];
+			const shared_ptr<CohFrictMat>& sdec1 = YADE_PTR_CAST<CohFrictMat>(b1->material);
+			const shared_ptr<CohFrictMat>& sdec2 = YADE_PTR_CAST<CohFrictMat>(b2->material);
+			
+			CohFrictPhys* contactPhysics = YADE_CAST<CohFrictPhys*>(ii->phys.get());
+			ScGeom6D*     geom = YADE_CAST<ScGeom6D*>(ii->geom.get());
+			if ((!dynamicOnly || b1->isDynamic()) && b1->shape->getClassName() == "Sphere")
+				geom->refR1 = YADE_CAST<Sphere*>(b1->shape.get())->radius;
+			if ((!dynamicOnly || b2->isDynamic()) && b2->shape->getClassName() == "Sphere")
+				geom->refR2 = YADE_CAST<Sphere*>(b2->shape.get())->radius;
+			Real          Ea             = sdec1->young;
+			Real          Eb             = sdec2->young;
+			Real          Va             = sdec1->poisson;
+			Real          Vb             = sdec2->poisson;
+			Real          Da             = geom->radius1;
+			Real          Db             = geom->radius2;
+			Real          Kn             = 2.0 * Ea * Da * Eb * Db / (Ea * Da + Eb * Db); //harmonic average of two stiffnesses
+			// harmonic average of alphas parameters
+			Real AlphaKr, AlphaKtw;
+			if (sdec1->alphaKr && sdec2->alphaKr) AlphaKr = 2.0 * sdec1->alphaKr * sdec2->alphaKr / (sdec1->alphaKr + sdec2->alphaKr);
+			else
+				AlphaKr = 0;
+			if (sdec1->alphaKtw && sdec2->alphaKtw) AlphaKtw = 2.0 * sdec1->alphaKtw * sdec2->alphaKtw / (sdec1->alphaKtw + sdec2->alphaKtw);
+			else
+				AlphaKtw = 0;
+
+			Real Ks;
+			if (Va && Vb)
+				Ks = 2.0 * Ea * Da * Va * Eb * Db * Vb
+				        / (Ea * Da * Va + Eb * Db * Vb); //harmonic average of two stiffnesses with ks=V*kn for each sphere
+			else
+				Ks = 0;
+
+			contactPhysics->kr                     = Da * Db * Ks * AlphaKr;
+			contactPhysics->ktw                    = Da * Db * Ks * AlphaKtw;
+
+			contactPhysics->kn = Kn;
+			contactPhysics->ks = Ks;
+
+			contactPhysics->maxRollPl         = math::min(sdec1->etaRoll * Da, sdec2->etaRoll * Db);
+			contactPhysics->maxTwistPl        = math::min(sdec1->etaTwist * Da, sdec2->etaTwist * Db);
 		}
 	}
 }

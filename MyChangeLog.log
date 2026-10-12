@@ -1,0 +1,131 @@
+================================================================================
+MyChangeLog.log  --  Personal change log for my YADE fork.
+================================================================================
+
+FORMAT: each entry STARTS WITH A DATE [YYYY-MM-DD]. Append new entries under
+"=== LOG ===", newest LAST. This file tracks ANY change I make to this fork
+(engines, recorders, docs, ...). Entries describe the final state of the change
+set, not the step-by-step editing history.
+
+--------------------------------------------------------------------------------
+=== LOG ===   (chronological, each entry begins with [YYYY-MM-DD], newest LAST)
+--------------------------------------------------------------------------------
+
+[2026-10-12]
+  This commit is the V2.0.0 release of this fork: one version, one commit. A
+  dedicated git tag V2.0.0 is created by this commit.
+
+  --- Contents ---
+  The release adds two capability groups on top of the upstream yade baseline this
+  branch is built on.
+
+  1) DirectShear suite -- rigid direct-shear / interface-shear boundary control.
+  The engine had already been used and validated in production runs before this
+  release, so it is packaged here essentially as it stands (comments / docs
+  clarified, plus one typo fix, intiald50 -> initiald50 in DirectShearBox.cpp):
+  - pkg/common/Recorder.hpp : Recorder::out made public (was protected) so
+    DirectShearBoxRecorder can reuse the same output stream.
+  - pkg/dem/DirectShearBox.hpp / .cpp : ADDED. DirectShearBox base engine and its
+    DirectShearBox6D subclass (rigid shear-box boundary control). Public surface:
+      * stress servo      : controlExternalStress(), controlInternalStress(),
+                            computeStress(), ComputeUnbalancedForce();
+      * particle scaling  : growParticles() override (mass/dynamicOnly options);
+      * friction control  : setBodyFriction(), setBodiesFriction(),
+                            setWallFriction(), setWallsFriction(),
+                            setSpheresFriction()/setSpheresFrictionOnly(),
+                            setAllFriction(), updateInteractionsFriction(),
+                            setInteractionsFrictionOnBody/Bodies/Walls/Clump();
+      * rolling & twist damping (eta) : setBodyEtaRoll/Twist(), setBodiesEta*(),
+                            setWallEtaRoll/Twist(), setWallsEta*(),
+                            setSpheresEtaRoll/Twist(Only)(), setAllEta(),
+                            setInteractionsEta();
+      * loading control   : setCycle(), setLoading(), setY(), setV(),
+                            setCurrentVY()/getCurrentVY(), setGravityZ(), setAxial(),
+                            setExternal(), setDamping(), resetRefSe3(), setPipeDOFs();
+      * boundary / runtime: updateStiffness(), action() main loop, showState(),
+                            setcolors();
+      * multi-body walls (wall_ids_*) and periodic-boundary-friendly setup that
+        pairs with InsertionSortCollider's allowBiggerThanPeriod.
+    updateStiffness() and the particlesVolume summation are OpenMP-parallel
+    (thread-local accumulation + omp critical / reduction(+:...)); the Z0 / Z1
+    Body and State pointers, the inverse X / Y / Z surface areas and the current
+    heightZ are cached (cachedWallZ0/Z1, cachedStateZ0/Z1, cachedHeightZ,
+    cachedInvXSurface/cachedInvYSurface/cachedInvZSurface) and re-derived only
+    when they are missing or when the height changed; setInteractionsFrictionOnBodies()
+    uses an std::unordered_set lookup instead of a linear scan over bodyIDs; the
+    vestigial "#ifdef FLOW_ENGINE ... flowEngine_T.hpp" block is dropped (no Flow
+    / pfv symbol is used anywhere in the file) and <unordered_set> is included
+    explicitly; currentSaverNum is no longer Attr::readonly, i.e. it can be
+    assigned from Python (reading it is unchanged).
+  - pkg/dem/DirectShearBoxRecorder.hpp / .cpp : ADDED. Records the six-face stress
+    / displacement of the direct-shear box (one CSV line per iterPeriod) with
+    multi-file saving (file2) and a scalingFactor hook. The engine lookup caches
+    getClassName() and stops at the first DirectShearBox / DirectShearBox6D engine
+    found, and the wall_id_Z1 State pointer is resolved once. The CSV header and
+    the column order are unchanged.
+  - pkg/dem/timeSaver.hpp / .cpp : ADDED. Periodic snapshot-saving engine
+    (setCycle / setSavertime / setSaverEvery).
+
+  2) Capillary model for the 6D (cohesive-frictional) contact model.
+  The capillary law only worked with CapillaryPhys / MindlinCapillaryPhys; this
+  release adds CapillaryCohPhys and Law2_ScGeom6D_CapillaryCohPhys_Capillarity, so
+  meniscus (liquid bridge) effects can be computed on ScGeom6D interactions as
+  well:
+  - pkg/dem/CapillaryPhys.hpp / .cpp : ADDED CapillaryCohPhys, the capillary
+    interaction physics (IPhys) for cohesive-frictional contacts. It is
+    CohFrictPhys based -- so it also carries the normal / tangential cohesion
+    and the rolling / twisting stiffness -- and exposes the same liquid-bridge
+    fields as CapillaryPhys: meniscus, isBroken, capillaryPressure, vMeniscus,
+    Delta1, Delta2, fCap, fusionNumber, nn11 / nn33, currentIndexes. Its IPhys
+    functor Ip2_CohFrictMat_CohFrictMat_CapillaryCohPhys (also added, derived
+    from Ip2_CohFrictMat_CohFrictMat_CohFrictPhys) creates it for CohFrictMat /
+    CohFrictMat interactions. Both are registered in YADE_PLUGIN.
+  - pkg/dem/Law2_ScGeom6D_CapillaryCohPhys_Capillarity.hpp / .cpp : ADDED. The
+    6D counterpart of Law2_ScGeom_CapillaryPhys_Capillarity, for CapillaryCohPhys
+    + ScGeom6D interactions. It reads the same M(r=i) capillary files and uses the
+    same control parameter (capillaryPressure), the same surfaceTension and the
+    same fusion logic (fusionDetection / binaryFusion), but keeps its own
+    BodiesMenisciiList6D container for the menisci-overlap bookkeeping.
+  - pkg/dem/Law2_ScGeom_CapillaryPhys_Capillarity.hpp : BodiesMenisciiList,
+    capillarylaw and the law class itself got virtual destructors, and
+    checkFusion() became virtual, so that the 6D law can derive from it.
+  - preprocessing/dem/Shop.hpp / Shop_02.cpp : new helpers
+      * getCapillaryStressNew() : Love-Weber capillary stress computed from
+        CapillaryCohPhys (sphere-sphere interactions only);
+      * capillaryCalculation() : single-pass aggregation of the six homogenised
+        stress components, the capillary pressure and the water saturation (%);
+      * setFrictionEtaRoll() : set the rolling friction (eta) and the friction
+        angle in one call;
+      * growParticlesWithInteractions() / growParticlesWith6DInteractions() :
+        homothetic particle growth which also updates the (6D) interactions.
+  - py/_utils.cpp : those five functions are exposed to python
+    (getCapillaryStressNew, capillaryCalculation, setFrictionEtaRoll,
+    growParticlesWithInteractions, growParticlesWith6DInteractions).
+  One deliberate functional divergence: the existing Shop::getCapillaryStress()
+  had been extended in place elsewhere so that it would also handle
+  CapillaryCohPhys. This release does NOT touch getCapillaryStress() -- the
+  original function is kept exactly as it was -- and adds a NEW function
+  Shop::getCapillaryStressNew() beside it (together with
+  Shop::capillaryCalculation()).
+
+  --- Licence / copyright ---
+  - LICENSE : kept as it is (the upstream GNU General Public License, version 2);
+  - COPYRIGHT : ADDED. States that this tree is a YADE snapshot whose upstream
+    parts keep their own copyright and licence, and that the components added here
+    (the DirectShear suite, the capillary model for the 6D contact model, the Shop
+    / python helpers) are Copyright (C) 2026 Chang GUO, everything under GPL v2 or
+    later;
+  - the files added or modified here carry their copyright / modification notice
+    in their header, and README.rst gains a "Copyright and license" section.
+
+  - README.rst : version framework / numbering scheme sections, a "Capillary suite"
+    feature note and a "Copyright and license" section, all describing this
+    version only.
+  - README.rst : version framework / numbering scheme sections and a "Capillary
+    suite" feature note, all describing this version only.
+
+  --- Note on the open-top variant (deliberately not included) ---
+  A temporary modification which handled the case without a lid (open top) is NOT
+  part of this line. It had been made earlier while back-analysing the
+  unsaturated pipe-soil interaction problem reported in Al-Khazaali and
+  Vanapalli (2019).

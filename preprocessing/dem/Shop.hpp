@@ -1,4 +1,8 @@
 // 2007 © Václav Šmilauer <eudoxos@arcig.cz>
+// Modifications by Chang GUO (2026): declared Shop::getCapillaryStressNew(),
+// Shop::capillaryCalculation(), Shop::setFrictionEtaRoll(),
+// Shop::growParticlesWithInteractions() and Shop::growParticlesWith6DInteractions().
+// Licensed under the GNU General Public License v2 or later; see file LICENSE.
 
 #pragma once
 
@@ -125,6 +129,13 @@ public:
 	//! Function to compute overall ("macroscopic") stress.
 	static Matrix3r getStress(Real volume = 0);
 	static Matrix3r getCapillaryStress(Real volume = 0, bool mindlin = false);
+	// Love-Weber capillary stress computed from the new CapillaryCohPhys (6D capillary+cohesive)
+	// instead of CapillaryPhys/MindlinCapillaryPhys. Sphere-sphere interactions only.
+	// volume == 0 triggers an automatic estimate (periodic cell volume, or the AABB volume).
+	static Matrix3r getCapillaryStressNew(Real volume = 0);
+	// Aggregate capillary quantities in a single pass: the six homogenised stress
+	// components, the capillary pressure and the water saturation (in percent).
+	static py::tuple capillaryCalculation(Real volume =0);
 	static Matrix3r stressTensorOfPeriodicCell()
 	{
 		LOG_WARN("Shop::stressTensorOfPeriodicCelli is DEPRECATED: use getStress instead");
@@ -166,9 +177,12 @@ public:
 
 	//! Set material and contact friction to the given value, non-dynamic bodies are not affected
 	static void setContactFriction(Real angleRad);
+	static void setFrictionEtaRoll(Real angleRad,Real er);
 
 	//! Homothetic change of sizes of spheres and clumps
 	static void growParticles(Real multiplier, bool updateMass, bool dynamicOnly);
+	static void growParticlesWithInteractions(Real multiplier, bool updateMass, bool dynamicOnly);
+	static void growParticlesWith6DInteractions(Real multiplier, bool updateMass, bool dynamicOnly);
 	//! Change of size of a single sphere or a clump
 	// DEPREC, update wrt growParticles()
 	static void growParticle(Body::id_t bodyID, Real multiplier, bool updateMass);

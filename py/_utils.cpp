@@ -1,3 +1,7 @@
+// Modifications by Chang GUO (2026): exposed Shop::getCapillaryStressNew(),
+// Shop::capillaryCalculation(), Shop::setFrictionEtaRoll(),
+// Shop::growParticlesWithInteractions(), Shop::growParticlesWith6DInteractions()
+// to python. Licensed under the GNU General Public License v2 or later; see LICENSE.
 #include <lib/high-precision/Constants.hpp>
 #include <core/InteractionLoop.hpp>
 #ifdef YADE_LS_DEM
@@ -843,6 +847,27 @@ try {
 	        "function. If it is not, it will be equal to one in non-periodic cases, or equal to the volume of the cell in periodic cases. Only the "
 	        "CapillaryPhys interaction type is supported presently. Using this function with physics MindlinCapillaryPhys needs to pass True as second "
 	        "argument.");
+	py::def("getCapillaryStressNew",
+	        Shop::getCapillaryStressNew,
+	        (py::args("volume") = 0),
+	        "Compute and return Love-Weber capillary stress tensor:\n\n $\\sigma^{cap}_{ij}=\\frac{1}{V}\\sum_b l_i^b f^{cap,b}_j$, where the sum is over "
+	        "all interactions, with $l$ the branch vector (joining centers of the bodies) and $f^{cap}$ is the capillary force, "
+	        "here read from the 6D capillary-cohesive physics (:yref:`CapillaryCohPhys`). Difference with "
+	        ":yref:`getCapillaryStress<Shop.getCapillaryStress>`: the contact model is not selectable here, hence no second "
+	        "argument (fCap is always taken from CapillaryCohPhys), and only sphere-sphere liquid bridges are summed, "
+	        "interactions involving walls, facets or clumps being skipped. $V$ can be passed to the function. If it is not, "
+	        "it will be equal to the volume of the cell in periodic cases, and to the volume of the AABB of the packing in "
+	        "non-periodic cases, which may underestimate the stress because of overlaps at the boundaries (a warning is then "
+	        "issued once).");
+	py::def("capillaryCalculation",
+	        Shop::capillaryCalculation,
+	        (py::args("volume") = 0),
+	        "Compute and return Love-Weber capillary stress tensor c11[0],c22[1],c33[2],c12[3],c13[4],c23[5], capillaryPressure[6] and Saturation in percent[7](100 is saturated). Intended for the 6D capillary-cohesive model, "
+	        "i.e. :yref:`CapillaryCohPhys` interactions handled by :yref:`Law2_ScGeom6D_CapillaryCohPhys_Capillarity`: only "
+	        "interactions actually carrying a liquid bridge (:yref:`meniscus<CapillaryCohPhys.meniscus>` true) are taken "
+	        "into account, the saturation being the sum of their :yref:`vMeniscus<CapillaryCohPhys.vMeniscus>` divided by "
+	        "the void volume of the sample. $V$ can be passed to the function; if it is not, it will be equal to the volume "
+	        "of the cell in periodic cases, and to the volume of the AABB of the packing in non-periodic cases.");
 	py::def("getBodyIdsContacts", Shop__getBodyIdsContacts, (py::args("bodyID") = 0), "Get a list of body-ids, which contacts the given body.");
 	py::def("maxOverlapRatio",
 	        maxOverlapRatio,
@@ -863,10 +888,25 @@ try {
 	        py::arg("angleRad"),
 	        "Modify the friction angle (in radians) inside the material classes and existing contacts. The friction for non-dynamic bodies is not "
 	        "modified.");
+	py::def("setFrictionEtaRoll",
+	        Shop::setFrictionEtaRoll,
+	        (py::arg("er"),py::arg("angleRad")),
+	        "Modify the eta of roll and the friction angle (in radians) inside the material classes and existing contacts. The friction for "
+	        "non-dynamic bodies is not modified.");
 	py::def("growParticles",
 	        Shop::growParticles,
 	        (py::args("multiplier"), py::args("updateMass") = true, py::args("dynamicOnly") = true),
 	        "Change the size of spheres and clumps of spheres by the multiplier. If updateMass=True, then the mass and inertia are updated. "
+	        "dynamicOnly=True will select dynamic bodies.");
+	py::def("growParticlesWithInteractions",
+	        Shop::growParticlesWithInteractions,
+	        (py::args("multiplier"), py::args("updateMass") = true, py::args("dynamicOnly") = true),
+	        "Change the size of spheres and clumps of spheres by the multiplier with updating interactions. If updateMass=True, then the mass and inertia are updated. "
+	        "dynamicOnly=True will select dynamic bodies.");
+	py::def("growParticlesWith6DInteractions",
+	        Shop::growParticlesWith6DInteractions,
+	        (py::args("multiplier"), py::args("updateMass") = true, py::args("dynamicOnly") = true),
+	        "Change the size of spheres and clumps of spheres by the multiplier with updating 6D interactions. If updateMass=True, then the mass and inertia are updated. "
 	        "dynamicOnly=True will select dynamic bodies.");
 	py::def("growParticle",
 	        Shop::growParticle,

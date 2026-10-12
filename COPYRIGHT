@@ -1,0 +1,30 @@
+This repository is a snapshot of YADE (Yet Another Dynamic Engine), the free
+discrete-element code. The whole upstream YADE tree is included, so its copyright
+notices (kept in the individual files) and its licence apply to it unchanged.
+
+Copyright (C) 2026 by Chang GUO <chang.guo@connect.polyu.hk>
+
+  covers the components added on top of that tree -- the DirectShear suite
+  (DirectShearBox / DirectShearBox6D / DirectShearBoxRecorder / timeSaver), the
+  capillary model for the 6D (cohesive-frictional) contact model (CapillaryCohPhys
+  and Law2_ScGeom6D_CapillaryCohPhys_Capillarity) and the Shop / python helpers
+  that go with them -- as well as the modifications made to existing files.
+
+Upstream files that were modified here, each carrying a notice of the change in
+its header:
+
+  pkg/common/Recorder.hpp                            Recorder::out made public
+  pkg/dem/CapillaryPhys.hpp / .cpp                   CapillaryCohPhys and its IPhys functor
+  pkg/dem/Law2_ScGeom_CapillaryPhys_Capillarity.hpp  virtual destructors, virtual checkFusion()
+  preprocessing/dem/Shop.hpp / Shop_02.cpp           the capillary / 6D helper functions
+  py/_utils.cpp                                      those helpers exposed to python
+
+Licence
+
+  GNU General Public License, version 2 or later -- the LICENSE file in this
+  directory holds the full text. YADE is free software; you can redistribute it
+  and/or modify it under the terms of that licence.
+
+  This program is distributed in the hope that it will be useful, but WITHOUT ANY
+  WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+  PARTICULAR PURPOSE. See the GNU General Public License for more details.
